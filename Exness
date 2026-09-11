@@ -12,83 +12,106 @@ summary_msg_id = None
 def send_msg(text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}
-    res = requests.post(url, data=payload, timeout=8).json()
-    return res['result']['message_id'] if res.get("ok") else None
+    try:
+        res = requests.post(url, data=payload, timeout=8).json()
+        return res['result']['message_id'] if res.get("ok") else None
+    except Exception as e:
+        print(f"Lỗi gửi tin nhắn: {e}")
+        return None
 
 def edit_msg(msg_id, text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
     payload = {"chat_id": CHAT_ID, "message_id": msg_id, "text": text, "parse_mode": "Markdown"}
-    requests.post(url, data=payload, timeout=8)
+    try:
+        requests.post(url, data=payload, timeout=8)
+    except Exception as e:
+        print(f"Lỗi sửa tin nhắn: {e}")
 
 def delete_msg(msg_id):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessage"
-    requests.post(url, data={"chat_id": CHAT_ID, "message_id": msg_id}, timeout=8)
+    try:
+        requests.post(url, data={"chat_id": CHAT_ID, "message_id": msg_id}, timeout=8)
+    except Exception as e:
+        print(f"Lỗi xóa tin nhắn: {e}")
 
 @app.route('/update_pnl', methods=['POST'])
 def update_pnl():
     global summary_msg_id, order_messages
-    data = request.json
-    positions = data.get("positions", [])
-    
-    current_tickets = set()
-    has_new_order = False
-    total_pnl = 0.0
+    try:
+        # 🟢 SỬA LỖI 1: Ép đọc JSON ép buộc (bỏ qua header thiếu Content-Type từ MQL5)
+        data = request.get_json(force=True, silent=True) or {}
+        positions = data.get("positions", [])
+        
+        current_tickets = set()
+        has_new_order = False
+        total_pnl = 0.0
 
-    # 1. Cập nhật các lệnh đang mở
-    for pos in positions:
-        ticket = str(pos['ticket'])
-        current_tickets.add(ticket)
-        total_pnl += pos['profit']
-        pnl_icon = "🟢" if pos['profit'] >= 0 else "🔴"
+        # 1. Cập nhật các lệnh đang mở
+        for pos in positions:
+            ticket = str(pos.get('ticket', ''))
+            if not ticket:
+                continue
+                
+            current_tickets.add(ticket)
+            profit = float(pos.get('profit', 0.0))
+            total_pnl += profit
+            pnl_icon = "🟢" if profit >= 0 else "🔴"
 
-        order_text = (
-            f"📌 **LỆNH #{ticket}** ({pos['symbol']})\n"
-            f"👉 **Loại:** {pos['type']} {pos['volume']}l\n"
-            f"💵 **Giá vào:** {pos['price_open']} ➔ **Hiện tại:** {pos['price_current']}\n"
-            f"💰 **PnL lệnh này:** {pnl_icon} `{pos['profit']:+.2f} USD`\n"
-            f"⏱ _Cập nhật: {pos['time']}_"
+            # 🟢 SỬA LỖI 2: Dùng .get('time', 'N/A') phòng trường hợp MQL5 không truyền time
+            time_str = pos.get('time', 'Mới nhất')
+
+            order_text = (
+                f"📌 **LỆNH #{ticket}** ({pos.get('symbol', 'N/A')})\n"
+                f"👉 **Loại:** {pos.get('type', 'BUY')} {pos.get('volume', 0)}l\n"
+                f"💵 **Giá vào:** {pos.get('price_open', 0)} ➔ **Hiện tại:** {pos.get('price_current', 0)}\n"
+                f"💰 **PnL lệnh này:** {pnl_icon} `{profit:+.2f} USD`\n"
+                f"⏱ _Cập nhật: {time_str}_"
+            )
+
+            if ticket not in order_messages:
+                msg_id = send_msg(order_text)
+                if msg_id:
+                    order_messages[ticket] = msg_id
+                    has_new_order = True
+            else:
+                edit_msg(order_messages[ticket], order_text)
+
+        # 2. Xử lý các lệnh vừa đóng
+        tracked_tickets = list(order_messages.keys())
+        for ticket in tracked_tickets:
+            if ticket not in current_tickets:
+                closed_text = (
+                    f"🔴 **LỆNH ĐÃ ĐÓNG #{ticket}**\n"
+                    f"🔒 **Trạng thái:** ĐÃ CỐ ĐỊNH PNL\n"
+                )
+                edit_msg(order_messages[ticket], closed_text)
+                del order_messages[ticket]
+
+        # 3. Tin nhắn tổng PnL dưới cùng
+        open_count = len(positions)
+        total_icon = "🟢 LÃI" if total_pnl >= 0 else "🔴 LỖ"
+        summary_text = (
+            f"📊 **TỔNG LÃI LỖ CÁC LỆNH**\n"
+            f"═════════════════\n"
+            f"📈 **Trạng thái:** {total_icon}\n"
+            f"💵 **TỔNG PNL:** `{total_pnl:+.2f} USD`\n"
+            f"🔢 **Số lệnh đang mở:** {open_count} lệnh\n"
         )
 
-        if ticket not in order_messages:
-            msg_id = send_msg(order_text)
-            if msg_id:
-                order_messages[ticket] = msg_id
-                has_new_order = True
+        if has_new_order and summary_msg_id:
+            delete_msg(summary_msg_id)
+            summary_msg_id = None
+
+        if summary_msg_id is None:
+            summary_msg_id = send_msg(summary_text)
         else:
-            edit_msg(order_messages[ticket], order_text)
+            edit_msg(summary_msg_id, summary_text)
 
-    # 2. Xử lý các lệnh vừa đóng
-    tracked_tickets = list(order_messages.keys())
-    for ticket in tracked_tickets:
-        if ticket not in current_tickets:
-            closed_text = (
-                f"🔴 **LỆNH ĐÃ ĐÓNG #{ticket}**\n"
-                f"🔒 **Trạng thái:** ĐÃ CỐ ĐỊNH PNL\n"
-            )
-            edit_msg(order_messages[ticket], closed_text)
-            del order_messages[ticket]
+        return jsonify({"status": "success"}), 200
 
-    # 3. Tin nhắn tổng PnL dưới cùng
-    open_count = len(positions)
-    total_icon = "🟢 LÃI" if total_pnl >= 0 else "🔴 LỖ"
-    summary_text = (
-        f"📊 **TỔNG LÃI LỖ CÁC LỆNH**\n"
-        f"═════════════════\n"
-        f"📈 **Trạng thái:** {total_icon}\n"
-        f"💵 **TỔNG PNL:** `{total_pnl:+.2f} USD`\n"
-        f"🔢 **Số lệnh đang mở:** {open_count} lệnh\n"
-    )
-
-    if has_new_order and summary_msg_id:
-        delete_msg(summary_msg_id)
-        summary_msg_id = None
-
-    if summary_msg_id is None:
-        summary_msg_id = send_msg(summary_text)
-    else:
-        edit_msg(summary_msg_id, summary_text)
-
-    return jsonify({"status": "success"})
+    except Exception as e:
+        print("Lỗi Backend:", str(e))
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
