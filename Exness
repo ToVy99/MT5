@@ -1,36 +1,48 @@
+import os
+import requests
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# Bộ nhớ tạm lưu dữ liệu PnL
-pnl_data = {
+# Lưu trữ PnL trong RAM
+latest_pnl_data = {
     "total_pnl": 0.0,
     "open_count": 0,
     "positions": []
 }
 
-# 1. MT5 VPS gửi dữ liệu vào đây
+# ĐIỀN THÔNG TIN TELEGRAM CỦA BẠN VÀO ĐÂY (NẾU MUỐN TELE BÁO TIN)
+TELEGRAM_BOT_TOKEN = "ĐIỀN_BOT_TOKEN_CỦA_BẠN"
+TELEGRAM_CHAT_ID = "ĐIỀN_CHAT_ID_CỦA_BẠN"
+
+def send_telegram(message):
+    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+        try:
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+            requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}, timeout=5)
+        except Exception as e:
+            print("Lỗi gửi Telegram:", e)
+
 @app.route('/update_pnl', methods=['POST'])
 def update_pnl():
-    global pnl_data
+    global latest_pnl_data
     try:
-        data = request.get_json(force=True, silent=True) or {}
-        positions = data.get("positions", [])
-        total = sum(float(p.get('profit', 0.0)) for p in positions)
+        data = request.get_json(force=True)
+        latest_pnl_data['total_pnl'] = float(data.get('total_pnl', 0.0))
+        latest_pnl_data['open_count'] = int(data.get('open_count', 0))
+        latest_pnl_data['positions'] = data.get('positions', [])
         
-        pnl_data = {
-            "total_pnl": total,
-            "open_count": len(positions),
-            "positions": positions
-        }
-        return jsonify({"status": "ok"}), 200
+        # Nếu muốn Telegram bắn tin nhắn khi EA gửi dữ liệu lên, bỏ dấu # dòng dưới:
+        # send_telegram(f"📊 <b>Cập nhật PnL:</b> {latest_pnl_data['total_pnl']} USD | Số lệnh: {latest_pnl_data['open_count']}")
+        
+        return jsonify({"status": "success"}), 200
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"status": "error", "message": str(e)}), 400
 
-# 2. Widget Android gọi vào đây để hiển thị ra màn hình
 @app.route('/get_pnl', methods=['GET'])
 def get_pnl():
-    return jsonify(pnl_data), 200
+    return jsonify(latest_pnl_data), 200
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
