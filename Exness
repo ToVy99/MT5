@@ -1,4 +1,5 @@
 import os
+import time
 from flask import Flask, request, jsonify
 import requests
 
@@ -11,22 +12,105 @@ pnl_data = {
     "positions": []
 }
 
-# Điền Token Bot và Chat ID Telegram của bạn vào 2 dòng này:
+# Thông tin Telegram Bot
 TELEGRAM_BOT_TOKEN = "8744695030:AAFFNtVB5mmzut05PdiKE0OMiH5wLju1r-g"
 TELEGRAM_CHAT_ID = "8451431517"
 
-def send_telegram(message):
-    if TELEGRAM_BOT_TOKEN and "ĐIỀN_" not in TELEGRAM_BOT_TOKEN:
+# Các biến toàn cục để quản lý trạng thái tin nhắn
+last_telegram_msg_id = None
+last_tickets = set()
+last_edit_time = 0  # Giới hạn tần suất Edit tránh bị Telegram chặn (Rate limit)
+
+def update_telegram(total_pnl, open_count, positions):
+    global last_telegram_msg_id, last_tickets, last_edit_time
+    
+    # Lấy danh sách ticket của các lệnh hiện tại
+    current_tickets = set(p.get("ticket") for p in positions if p.get("ticket"))
+    
+    # 1. Trường hợp: ĐÃ ĐÓNG HẾT LỆNH (không còn lệnh nào chạy)
+    if open_count == 0 or not positions:
+        if last_telegram_msg_id is not None:
+            # Sửa tin nhắn gần nhất thông báo đã đóng sạch lệnh
+            msg_close = "🏁 <b>Đã đóng tất cả các lệnh!</b>\n💰 PnL cuối cùng: <b>0.00 USD</b>"
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText"
+            payload = {
+                "chat_id": TELEGRAM_CHAT_ID,
+                "message_id": last_telegram_msg_id,
+                "text": msg_close,
+                "parse_mode": "HTML"
+            }
+            try:
+                requests.post(url, json=payload, timeout=5)
+            except Exception as e:
+                print(f"Lỗi gửi close msg: {e}")
+            
+            # Reset lại ID tin nhắn và danh sách ticket
+            last_telegram_msg_id = None
+            last_tickets = set()
+        return
+
+    # 2. Tạo nội dung tin nhắn chi tiết
+    icon = "🟩" if total_pnl >= 0 else "🟥"
+    msg_text = f"📊 <b>Cập nhật PnL MT5</b>\n"
+    msg_text += f"💰 Tổng PnL: <b>{icon} {total_pnl:+.2f} USD</b>\n"
+    msg_text += f"📈 Số lệnh đang mở: <b>{open_count}</b>\n"
+    msg_text += "\n<b>Chi tiết từng lệnh:</b>\n"
+    
+    for pos in positions:
+        p_val = pos.get('profit', 0.0)
+        p_icon = "🟢" if p_val >= 0 else "🔴"
+        symbol = pos.get('symbol', 'UNKNOWN')
+        p_type = pos.get('type', '')
+        vol = pos.get('volume', 0.0)
+        msg_text += f"• {symbol} ({p_type} {vol:.2f}): {p_icon} <b>{p_val:+.2f} USD</b>\n"
+
+    # Kiểm tra xem danh sách các lệnh có bị thay đổi không (mở thêm lệnh mới hoặc bớt lệnh)
+    has_order_changed = (current_tickets != last_tickets)
+    current_time = time.time()
+
+    # TRƯỜNG HỢP A: Mở lệnh mới / Đổi danh sách lệnh / Chưa có tin nhắn cũ -> GỬI TIN NHẮN MỚI
+    if has_order_changed or last_telegram_msg_id is None:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         payload = {
             "chat_id": TELEGRAM_CHAT_ID,
-            "text": message,
+            "text": msg_text,
             "parse_mode": "HTML"
         }
         try:
-            requests.post(url, json=payload, timeout=5)
+            res = requests.post(url, json=payload, timeout=5).json()
+            if res.get("ok"):
+                last_telegram_msg_id = res["result"]["message_id"]
+                last_tickets = current_tickets
+                last_edit_time = current_time
         except Exception as e:
-            print(f"Lỗi gửi Telegram: {e}")
+            print(f"Lỗi gửi tin nhắn mới Telegram: {e}")
+
+    # TRƯỜNG HỢP B: Danh sách lệnh giữ nguyên (chỉ tiền nhảy) -> SỬA (EDIT) TIN NHẮN CŨ
+    else:
+        # Giới hạn tối thiểu 2 giây mới edit 1 lần để tránh bị Telegram spam rate limit
+        if current_time - last_edit_time < 2:
+            return
+
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText"
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "message_id": last_telegram_msg_id,
+            "text": msg_text,
+            "parse_mode": "HTML"
+        }
+        try:
+            res = requests.post(url, json=payload, timeout=5).json()
+            if res.get("ok"):
+                last_edit_time = current_time
+            else:
+                # Nếu tin nhắn cũ vô tình bị người dùng xoá trên Telegram -> Tạo lại tin mới
+                url_send = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+                res_send = requests.post(url_send, json=payload, timeout=5).json()
+                if res_send.get("ok"):
+                    last_telegram_msg_id = res_send["result"]["message_id"]
+                    last_edit_time = current_time
+        except Exception as e:
+            print(f"Lỗi edit tin nhắn Telegram: {e}")
 
 @app.route('/update_pnl', methods=['POST'])
 def update_pnl():
@@ -36,14 +120,27 @@ def update_pnl():
         if not data:
             return jsonify({"status": "error", "message": "No data"}), 400
 
-        pnl_data = data
+        positions = data.get("positions", [])
+        
+        # Tự động tính toán fallback nếu EA gửi thiếu trường
+        if "total_pnl" in data:
+            total_pnl = float(data.get("total_pnl", 0.0))
+        else:
+            total_pnl = sum(float(p.get("profit", 0.0)) for p in positions)
 
-        total_pnl = data.get("total_pnl", 0.0)
-        open_count = data.get("open_count", 0)
+        if "open_count" in data:
+            open_count = int(data.get("open_count", 0))
+        else:
+            open_count = len(positions)
 
-        # Gửi thông báo sang Telegram
-        msg = f"📊 <b>Cập nhật PnL MT5</b>\n💰 PnL: <b>{total_pnl:+.2f} USD</b>\n📈 Lệnh mở: {open_count}"
-        send_telegram(msg)
+        pnl_data = {
+            "total_pnl": total_pnl,
+            "open_count": open_count,
+            "positions": positions
+        }
+
+        # Gọi hàm cập nhật Telegram thông minh
+        update_telegram(total_pnl, open_count, positions)
 
         return jsonify({"status": "success"}), 200
     except Exception as e:
