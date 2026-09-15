@@ -30,7 +30,6 @@ def update_telegram(total_pnl, open_count, positions):
     # 1. Trường hợp: ĐÃ ĐÓNG HẾT LỆNH (không còn lệnh nào chạy)
     if open_count == 0 or not positions:
         if last_telegram_msg_id is not None:
-            # Sửa tin nhắn gần nhất thông báo đã đóng sạch lệnh
             msg_close = "🏁 <b>Đã đóng tất cả các lệnh!</b>\n💰 PnL cuối cùng: <b>0.00 USD</b>"
             url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText"
             payload = {
@@ -44,7 +43,7 @@ def update_telegram(total_pnl, open_count, positions):
             except Exception as e:
                 print(f"Lỗi gửi close msg: {e}")
             
-            # Reset lại ID tin nhắn và danh sách ticket
+            # Reset lại trạng thái
             last_telegram_msg_id = None
             last_tickets = set()
         return
@@ -64,7 +63,11 @@ def update_telegram(total_pnl, open_count, positions):
         vol = pos.get('volume', 0.0)
         msg_text += f"• {symbol} ({p_type} {vol:.2f}): {p_icon} <b>{p_val:+.2f} USD</b>\n"
 
-    # Kiểm tra xem danh sách các lệnh có bị thay đổi không (mở thêm lệnh mới hoặc bớt lệnh)
+    # THÊM DÒNG TỔNG Ở DƯỚI CÙNG DỄ NHÌN
+    msg_text += "───────────────\n"
+    msg_text += f"💵 <b>TỔNG PNL: {icon} {total_pnl:+.2f} USD</b>"
+
+    # Kiểm tra xem danh sách các lệnh có bị thay đổi không (mở thêm lệnh mới hoặc đóng bớt lệnh)
     has_order_changed = (current_tickets != last_tickets)
     current_time = time.time()
 
@@ -139,7 +142,7 @@ def update_pnl():
             "positions": positions
         }
 
-        # Gọi hàm cập nhật Telegram thông minh
+        # Gọi hàm cập nhật Telegram
         update_telegram(total_pnl, open_count, positions)
 
         return jsonify({"status": "success"}), 200
