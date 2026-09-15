@@ -51,7 +51,6 @@ def update_telegram(total_pnl, open_count, positions):
     # 2. Tạo nội dung tin nhắn chi tiết
     icon = "🟩" if total_pnl >= 0 else "🟥"
     msg_text = f"📊 <b>Cập nhật PnL MT5</b>\n"
-    msg_text += f"💰 Tổng PnL: <b>{icon} {total_pnl:+.2f} USD</b>\n"
     msg_text += f"📈 Số lệnh đang mở: <b>{open_count}</b>\n"
     msg_text += "\n<b>Chi tiết từng lệnh:</b>\n"
     
