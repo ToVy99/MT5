@@ -1,47 +1,57 @@
 import os
-import requests
 from flask import Flask, request, jsonify
+import requests
 
 app = Flask(__name__)
 
-# Lưu trữ PnL trong RAM
-latest_pnl_data = {
+# Bộ nhớ tạm lưu PnL cho Widget Android
+pnl_data = {
     "total_pnl": 0.0,
     "open_count": 0,
     "positions": []
 }
 
-# ĐIỀN THÔNG TIN TELEGRAM CỦA BẠN VÀO ĐÂY (NẾU MUỐN TELE BÁO TIN)
-TELEGRAM_BOT_TOKEN = "ĐIỀN_BOT_TOKEN_CỦA_BẠN"
-TELEGRAM_CHAT_ID = "ĐIỀN_CHAT_ID_CỦA_BẠN"
+# Điền Token Bot và Chat ID Telegram của bạn vào 2 dòng này:
+TELEGRAM_BOT_TOKEN = "ĐIỀN_TOKEN_BOT_CỦA_BẠN_VÀO_ĐÂY"
+TELEGRAM_CHAT_ID = "ĐIỀN_CHAT_ID_CỦA_BẠN_VÀO_ĐÂY"
 
 def send_telegram(message):
-    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+    if TELEGRAM_BOT_TOKEN and "ĐIỀN_" not in TELEGRAM_BOT_TOKEN:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": message,
+            "parse_mode": "HTML"
+        }
         try:
-            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-            requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}, timeout=5)
+            requests.post(url, json=payload, timeout=5)
         except Exception as e:
-            print("Lỗi gửi Telegram:", e)
+            print(f"Lỗi gửi Telegram: {e}")
 
 @app.route('/update_pnl', methods=['POST'])
 def update_pnl():
-    global latest_pnl_data
+    global pnl_data
     try:
-        data = request.get_json(force=True)
-        latest_pnl_data['total_pnl'] = float(data.get('total_pnl', 0.0))
-        latest_pnl_data['open_count'] = int(data.get('open_count', 0))
-        latest_pnl_data['positions'] = data.get('positions', [])
-        
-        # Nếu muốn Telegram bắn tin nhắn khi EA gửi dữ liệu lên, bỏ dấu # dòng dưới:
-        # send_telegram(f"📊 <b>Cập nhật PnL:</b> {latest_pnl_data['total_pnl']} USD | Số lệnh: {latest_pnl_data['open_count']}")
-        
+        data = request.get_json()
+        if not data:
+            return jsonify({"status": "error", "message": "No data"}), 400
+
+        pnl_data = data
+
+        total_pnl = data.get("total_pnl", 0.0)
+        open_count = data.get("open_count", 0)
+
+        # Gửi thông báo sang Telegram
+        msg = f"📊 <b>Cập nhật PnL MT5</b>\n💰 PnL: <b>{total_pnl:+.2f} USD</b>\n📈 Lệnh mở: {open_count}"
+        send_telegram(msg)
+
         return jsonify({"status": "success"}), 200
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 400
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/get_pnl', methods=['GET'])
 def get_pnl():
-    return jsonify(latest_pnl_data), 200
+    return jsonify(pnl_data), 200
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
