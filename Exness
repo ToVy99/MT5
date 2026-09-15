@@ -12,8 +12,8 @@ pnl_data = {
 }
 
 # Điền Token Bot và Chat ID Telegram của bạn vào 2 dòng này:
-TELEGRAM_BOT_TOKEN = "ĐIỀN_TOKEN_BOT_CỦA_BẠN_VÀO_ĐÂY"
-TELEGRAM_CHAT_ID = "ĐIỀN_CHAT_ID_CỦA_BẠN_VÀO_ĐÂY"
+TELEGRAM_BOT_TOKEN = "8744695030:AAFFNtVB5mmzut05PdiKE0OMiH5wLju1r-g"
+TELEGRAM_CHAT_ID = "8451431517"
 
 def send_telegram(message):
     if TELEGRAM_BOT_TOKEN and "ĐIỀN_" not in TELEGRAM_BOT_TOKEN:
